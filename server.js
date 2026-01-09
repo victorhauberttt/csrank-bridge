@@ -462,7 +462,8 @@ app.listen(PORT, () => {
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║                    CSRank Bridge Server                      ║');
   console.log('╠══════════════════════════════════════════════════════════════╣');
-  console.log(`║  Server running on: http://localhost:${PORT}                    ║`);
+  console.log(`║  Internal: http://localhost:${PORT}                             ║`);
+  console.log(`║  External: ${BASE_URL}                                          ║`);
   console.log('║                                                              ║');
   console.log('║  Endpoints:                                                  ║');
   console.log('║  - GET  /auth/steam          - Iniciar login Steam           ║');
