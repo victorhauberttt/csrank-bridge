@@ -131,42 +131,57 @@ app.get('/auth/steam/callback', async (req, res) => {
         personaName: profileData.personaname
       });
 
-      // Retornar página de sucesso com token
-      res.send(`
-        <html>
-          <head>
-            <title>CSRank - Login Sucesso</title>
-          </head>
-          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
-            <div style="text-align:center;">
-              <img src="${profileData.avatarfull}" style="border-radius:50%;width:100px;height:100px;border:3px solid #f39c12;">
-              <h1 style="color:#2ecc71;">Bem-vindo, ${profileData.personaname}!</h1>
-              <p>Login realizado com sucesso.</p>
-              <p style="color:#888;">Você pode fechar esta janela.</p>
-              <script>
-                // Dados de autenticacao
-                const authData = JSON.stringify({
-                  token: '${customToken}',
-                  steamId: '${steamId}',
-                  personaName: '${profileData.personaname.replace(/'/g, "\\'")}',
-                  avatarUrl: '${profileData.avatarfull}'
-                });
+      // Redirecionar para URL de sucesso com token nos parametros
+      // Isso e mais confiavel que JavaScript channels em WebViews
+      const successParams = new URLSearchParams({
+        token: customToken,
+        steamId: steamId,
+        personaName: profileData.personaname,
+        avatarUrl: profileData.avatarfull
+      });
 
-                // Enviar via JavaScript channel (WebView Flutter) - metodo principal
-                if (window.CSRankAuth) {
-                  window.CSRankAuth.postMessage(authData);
-                }
-              </script>
-            </div>
-          </body>
-        </html>
-      `);
+      const successUrl = `${BASE_URL}/auth/success?${successParams.toString()}`;
+      res.redirect(successUrl);
 
     } catch (err) {
       console.error('Error processing Steam login:', err);
       res.status(500).send('Error processing login');
     }
   });
+});
+
+// Pagina de sucesso do login (Flutter intercepta esta URL)
+app.get('/auth/success', (req, res) => {
+  const { token, steamId, personaName, avatarUrl } = req.query;
+
+  // Esta pagina sera exibida brevemente enquanto o Flutter processa
+  // O Flutter intercepta a URL e extrai os parametros antes de mostrar
+  res.send(`
+    <html>
+      <head>
+        <title>CSRank - Login Sucesso</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+        <div style="text-align:center;padding:20px;">
+          <div style="font-size:60px;margin-bottom:20px;">✓</div>
+          <h1 style="color:#2ecc71;margin-bottom:10px;">Login Realizado!</h1>
+          <p style="color:#ccc;">Redirecionando para o app...</p>
+          <script>
+            // Fallback: tentar enviar via JavaScript channel
+            if (window.CSRankAuth) {
+              window.CSRankAuth.postMessage(JSON.stringify({
+                token: '${token}',
+                steamId: '${steamId}',
+                personaName: '${(personaName || '').replace(/'/g, "\\'")}',
+                avatarUrl: '${avatarUrl}'
+              }));
+            }
+          </script>
+        </div>
+      </body>
+    </html>
+  `);
 });
 
 // API para obter token (usado pelo app após callback)
