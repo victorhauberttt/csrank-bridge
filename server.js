@@ -144,20 +144,30 @@ app.get('/auth/steam/callback', async (req, res) => {
               <p>Login realizado com sucesso.</p>
               <p style="color:#888;">Você pode fechar esta janela.</p>
               <script>
-                // Enviar token para o app
+                // Dados de autenticacao
+                const authData = {
+                  token: '${customToken}',
+                  steamId: '${steamId}',
+                  personaName: '${profileData.personaname.replace(/'/g, "\\'")}',
+                  avatarUrl: '${profileData.avatarfull}'
+                };
+
+                // Enviar via JavaScript channel (WebView Flutter)
+                if (window.CSRankAuth) {
+                  window.CSRankAuth.postMessage(JSON.stringify(authData));
+                }
+
+                // Enviar token para o app via postMessage
                 if (window.opener) {
                   window.opener.postMessage({
                     type: 'STEAM_AUTH_SUCCESS',
-                    token: '${customToken}',
-                    steamId: '${steamId}',
-                    personaName: '${profileData.personaname}',
-                    avatarUrl: '${profileData.avatarfull}'
+                    ...authData
                   }, '*');
                   setTimeout(() => window.close(), 2000);
                 }
 
                 // Para deep link no mobile
-                const deepLink = 'csrank://auth?token=${customToken}';
+                const deepLink = 'csrank://auth?token=${customToken}&steamId=${steamId}&personaName=' + encodeURIComponent('${profileData.personaname.replace(/'/g, "\\'")}') + '&avatarUrl=' + encodeURIComponent('${profileData.avatarfull}');
                 setTimeout(() => {
                   window.location.href = deepLink;
                 }, 1000);
