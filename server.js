@@ -86,15 +86,22 @@ app.get('/auth/steam', (req, res) => {
 
 // Callback do Steam
 app.get('/auth/steam/callback', async (req, res) => {
-  steamOpenId.verifyAssertion(req, async (error, result) => {
+  // Construir a URL completa manualmente para garantir HTTPS no Render
+  // Isso resolve problemas onde o proxy do Render faz a lib achar que é HTTP
+  const fullUrl = BASE_URL + req.originalUrl;
+  console.log('Verifying assertion for:', fullUrl);
+
+  steamOpenId.verifyAssertion(fullUrl, async (error, result) => {
     if (error || !result.authenticated) {
       console.error('Steam verification failed:', error);
+      const errorMsg = error ? error.message : 'Not authenticated';
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
             <div style="text-align:center;">
               <h1 style="color:#ff6b6b;">Erro no Login</h1>
               <p>Não foi possível verificar sua conta Steam.</p>
+              <p style="color:#aaa;font-size:12px;">Detalhes: ${errorMsg}</p>
               <p>Feche esta janela e tente novamente.</p>
             </div>
           </body>
