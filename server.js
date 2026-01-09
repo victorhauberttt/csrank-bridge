@@ -365,6 +365,9 @@ async function updatePlayerAggregatedStats(steamId) {
     let totalAdr = 0, totalRating = 0, totalHsPercent = 0;
     let wins = 0, losses = 0, draws = 0;
     let totalMvps = 0, totalPlants = 0, totalDefuses = 0;
+    let totalClutches = 0, totalFirstKills = 0, totalFirstDeaths = 0;
+    let totalUtilityDamage = 0, totalEnemiesFlashed = 0, totalFlashAssists = 0;
+    let totalKast = 0;
     let matchCount = 0;
 
     statsSnapshot.forEach(doc => {
@@ -378,6 +381,13 @@ async function updatePlayerAggregatedStats(steamId) {
       totalMvps += s.mvps || 0;
       totalPlants += s.plants || 0;
       totalDefuses += s.defuses || 0;
+      totalClutches += s.clutchesWon || 0;
+      totalFirstKills += s.firstKills || 0;
+      totalFirstDeaths += s.firstDeaths || 0;
+      totalUtilityDamage += s.utilityDamage || 0;
+      totalEnemiesFlashed += s.enemiesFlashed || 0;
+      totalFlashAssists += s.flashAssists || 0;
+      totalKast += s.kast || 0;
 
       if (s.isWinner === true) wins++;
       else if (s.isWinner === false) losses++;
@@ -395,6 +405,7 @@ async function updatePlayerAggregatedStats(steamId) {
       avgAdr: matchCount > 0 ? (totalAdr / matchCount).toFixed(1) : 0,
       avgRating: matchCount > 0 ? (totalRating / matchCount).toFixed(2) : 0,
       avgHsPercent: matchCount > 0 ? (totalHsPercent / matchCount).toFixed(1) : 0,
+      avgKast: matchCount > 0 ? (totalKast / matchCount).toFixed(1) : 0,
       wins,
       losses,
       draws,
@@ -402,6 +413,12 @@ async function updatePlayerAggregatedStats(steamId) {
       totalMvps,
       totalPlants,
       totalDefuses,
+      totalClutches,
+      totalFirstKills,
+      totalFirstDeaths,
+      totalUtilityDamage,
+      totalEnemiesFlashed,
+      totalFlashAssists,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp()
     };
 
