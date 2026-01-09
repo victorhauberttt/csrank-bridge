@@ -131,17 +131,45 @@ app.get('/auth/steam/callback', async (req, res) => {
         personaName: profileData.personaname
       });
 
-      // Redirecionar para URL de sucesso com token nos parametros
-      // Isso e mais confiavel que JavaScript channels em WebViews
-      const successParams = new URLSearchParams({
+      // RENDERIZAR DIRETAMENTE - sem redirect (Android WebView nao intercepta redirects bem)
+      const authData = JSON.stringify({
         token: customToken,
         steamId: steamId,
         personaName: profileData.personaname,
         avatarUrl: profileData.avatarfull
       });
 
-      const successUrl = `${BASE_URL}/auth/success?${successParams.toString()}`;
-      res.redirect(successUrl);
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <title>CSRank - Login OK</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <meta name="auth-data" content='${authData.replace(/'/g, "\\'")}'>
+          </head>
+          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+            <div style="text-align:center;padding:20px;">
+              <div style="font-size:60px;margin-bottom:20px;">✓</div>
+              <h1 style="color:#2ecc71;margin-bottom:10px;">Login Realizado!</h1>
+              <p style="color:#ccc;" id="status">Processando...</p>
+            </div>
+            <script>
+              // Envia dados para o Flutter via JavaScript Channel
+              (function() {
+                var data = ${authData};
+
+                // Tenta enviar via CSRankAuth channel
+                if (window.CSRankAuth) {
+                  window.CSRankAuth.postMessage(JSON.stringify(data));
+                  document.getElementById('status').textContent = 'Redirecionando...';
+                } else {
+                  document.getElementById('status').textContent = 'Feche esta janela';
+                }
+              })();
+            </script>
+          </body>
+        </html>
+      `);
 
     } catch (err) {
       console.error('Error processing Steam login:', err);
