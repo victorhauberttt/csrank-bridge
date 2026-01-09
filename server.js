@@ -15,8 +15,12 @@ const axios = require('axios');
 const { RelyingParty } = require('openid');
 
 const app = express();
+// IMPORTANTE: Necessário para o Render (que usa proxy reverso HTTPS)
+app.set('trust proxy', 1);
+
 const PORT = process.env.PORT || 3000;
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+// Se estiver no Render (RENDER_EXTERNAL_URL existe) usa ela, senão tenta BASE_URL ou fallback local
+const BASE_URL = process.env.BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 const STEAM_API_KEY = process.env.STEAM_API_KEY;
 
 // Inicializar Firebase Admin
