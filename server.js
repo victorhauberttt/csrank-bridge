@@ -112,6 +112,7 @@ app.get('/auth/steam/callback', async (req, res) => {
     verifyParams.set('openid.mode', 'check_authentication');
 
     console.log('[AUTH] Verifying with Steam...');
+    console.log('[AUTH] Verify params:', verifyParams.toString().substring(0, 500));
 
     const verifyResponse = await axios.post(
       'https://steamcommunity.com/openid/login',
@@ -119,21 +120,28 @@ app.get('/auth/steam/callback', async (req, res) => {
       {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
+          'Accept': '*/*',
         },
+        timeout: 10000,
       }
     );
 
-    const responseText = verifyResponse.data;
+    const responseText = String(verifyResponse.data);
     console.log('[AUTH] Steam response:', responseText);
+    console.log('[AUTH] Response type:', typeof responseText);
+    console.log('[AUTH] Contains is_valid:true?', responseText.includes('is_valid:true'));
 
+    // Steam retorna no formato: ns:http://specs.openid.net/auth/2.0\nis_valid:true\n
+    // ou is_valid:false
     if (!responseText.includes('is_valid:true')) {
-      console.error('[AUTH] Steam validation failed');
+      console.error('[AUTH] Steam validation failed - response:', responseText);
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
             <div style="text-align:center;">
               <h1 style="color:#ff6b6b;">Erro no Login</h1>
               <p>Validação Steam falhou</p>
+              <p style="font-size:10px;color:#666;">${responseText.substring(0, 200)}</p>
             </div>
           </body>
         </html>
