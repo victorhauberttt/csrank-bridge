@@ -3,21 +3,17 @@
  *
  * Responsabilidades:
  * 1. Receber webhooks do MatchZy com stats das partidas
- * 2. Processar login Steam via OpenID 2.0 (usando passport-steam)
+ * 2. Processar login Steam via OpenID 2.0
  * 3. Sincronizar dados com Firebase
  */
 
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const session = require('express-session');
-const passport = require('passport');
-const SteamStrategy = require('passport-steam').Strategy;
 const admin = require('firebase-admin');
 const axios = require('axios');
 
 const app = express();
-// IMPORTANTE: Necessário para o Render (que usa proxy reverso HTTPS)
 app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 3000;
@@ -44,170 +40,169 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Session para passport (necessário mas não usamos para persistir)
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'csrank-steam-auth-secret-key',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false } // Não precisamos de cookie seguro pois não persistimos sessão
-}));
-
-app.use(passport.initialize());
-
-// Passport serialization (mínimo necessário)
-passport.serializeUser((user, done) => done(null, user));
-passport.deserializeUser((obj, done) => done(null, obj));
-
 // ============================================
-// STEAM AUTHENTICATION (usando passport-steam)
+// STEAM AUTHENTICATION (OpenID 2.0 Manual)
 // ============================================
 
-// Configurar estratégia Steam dinamicamente baseado no request
 function getBaseUrl(req) {
   const protocol = req.protocol;
   const host = req.get('host');
   return `${protocol}://${host}`;
 }
 
-// Iniciar login Steam
-app.get('/auth/steam', (req, res, next) => {
+// Iniciar login Steam - redireciona para Steam OpenID
+app.get('/auth/steam', (req, res) => {
   const baseUrl = getBaseUrl(req);
-  console.log(`[AUTH] Starting Steam auth with realm: ${baseUrl}`);
+  const returnUrl = `${baseUrl}/auth/steam/callback`;
 
-  // Criar estratégia dinamicamente com a URL correta
-  const strategy = new SteamStrategy({
-    returnURL: `${baseUrl}/auth/steam/callback`,
-    realm: baseUrl,
-    apiKey: STEAM_API_KEY
-  }, (identifier, profile, done) => {
-    // Extrair steamId do identifier
-    const steamId = identifier.replace('https://steamcommunity.com/openid/id/', '');
-    profile.steamId = steamId;
-    return done(null, profile);
+  console.log(`[AUTH] Starting Steam auth`);
+  console.log(`[AUTH] Base URL: ${baseUrl}`);
+  console.log(`[AUTH] Return URL: ${returnUrl}`);
+
+  // Construir URL do Steam OpenID manualmente
+  const params = new URLSearchParams({
+    'openid.ns': 'http://specs.openid.net/auth/2.0',
+    'openid.mode': 'checkid_setup',
+    'openid.return_to': returnUrl,
+    'openid.realm': baseUrl,
+    'openid.identity': 'http://specs.openid.net/auth/2.0/identifier_select',
+    'openid.claimed_id': 'http://specs.openid.net/auth/2.0/identifier_select',
   });
 
-  // Registrar estratégia temporária
-  passport.use('steam-dynamic', strategy);
+  const steamLoginUrl = `https://steamcommunity.com/openid/login?${params.toString()}`;
+  console.log(`[AUTH] Redirecting to Steam...`);
 
-  // Autenticar
-  passport.authenticate('steam-dynamic')(req, res, next);
+  res.redirect(steamLoginUrl);
 });
 
-// Callback do Steam
-app.get('/auth/steam/callback', (req, res, next) => {
+// Callback do Steam - verifica a asserção OpenID
+app.get('/auth/steam/callback', async (req, res) => {
   const baseUrl = getBaseUrl(req);
-  console.log(`[AUTH] Steam callback received at: ${baseUrl}`);
-  console.log(`[AUTH] Query params:`, req.query);
-  console.log(`[AUTH] STEAM_API_KEY configured:`, !!STEAM_API_KEY);
 
-  // Recriar estratégia com a mesma URL
-  const strategy = new SteamStrategy({
-    returnURL: `${baseUrl}/auth/steam/callback`,
-    realm: baseUrl,
-    apiKey: STEAM_API_KEY
-  }, (identifier, profile, done) => {
-    const steamId = identifier.replace('https://steamcommunity.com/openid/id/', '');
-    profile.steamId = steamId;
-    return done(null, profile);
-  });
+  console.log(`[AUTH] Steam callback received`);
+  console.log(`[AUTH] Mode: ${req.query['openid.mode']}`);
 
-  passport.use('steam-dynamic', strategy);
+  // Verificar se o usuário cancelou
+  if (req.query['openid.mode'] === 'cancel') {
+    console.log('[AUTH] User cancelled');
+    return res.send(`
+      <html>
+        <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+          <div style="text-align:center;">
+            <h1>Login Cancelado</h1>
+            <p>Feche esta janela e tente novamente.</p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
 
-  passport.authenticate('steam-dynamic', { session: false }, async (err, user, info) => {
-    console.log('[AUTH] authenticate callback - err:', err?.message, 'user:', !!user, 'info:', info);
+  // Verificar a asserção com a Steam
+  try {
+    const verifyParams = new URLSearchParams();
 
-    if (err) {
-      console.error('[AUTH] Steam auth error:', err.message, err.stack);
+    // Copiar todos os parâmetros openid da query
+    for (const [key, value] of Object.entries(req.query)) {
+      if (key.startsWith('openid.')) {
+        verifyParams.append(key, value);
+      }
+    }
+
+    // Mudar o mode para check_authentication
+    verifyParams.set('openid.mode', 'check_authentication');
+
+    console.log('[AUTH] Verifying with Steam...');
+
+    const verifyResponse = await axios.post(
+      'https://steamcommunity.com/openid/login',
+      verifyParams.toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+      }
+    );
+
+    const responseText = verifyResponse.data;
+    console.log('[AUTH] Steam response:', responseText);
+
+    if (!responseText.includes('is_valid:true')) {
+      console.error('[AUTH] Steam validation failed');
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
             <div style="text-align:center;">
               <h1 style="color:#ff6b6b;">Erro no Login</h1>
-              <p>dados incorretos</p>
-              <p style="color:#aaa;font-size:12px;">${err.message || 'Authentication failed'}</p>
+              <p>Validação Steam falhou</p>
             </div>
           </body>
         </html>
       `);
     }
 
-    if (!user) {
-      console.error('[AUTH] No user returned from Steam');
-      return res.status(401).send(`
-        <html>
-          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
-            <div style="text-align:center;">
-              <h1 style="color:#ff6b6b;">Erro no Login</h1>
-              <p>Autenticação cancelada ou falhou</p>
-            </div>
-          </body>
-        </html>
-      `);
-    }
+    // Extrair SteamID64 do claimed_id
+    const claimedId = req.query['openid.claimed_id'];
+    const steamId = claimedId.replace('https://steamcommunity.com/openid/id/', '');
 
-    const steamId = user.steamId || user.id;
     console.log('[AUTH] Steam login successful for:', steamId);
 
-    try {
-      // Buscar dados do perfil Steam (passport-steam já fornece alguns)
-      const profileData = user._json || await getSteamProfile(steamId);
+    // Buscar dados do perfil Steam
+    const profileData = await getSteamProfile(steamId);
 
-      // Criar/atualizar usuário no Firebase
-      await db.collection('users').doc(steamId).set({
-        steamId: steamId,
-        personaName: profileData.personaname || user.displayName,
-        avatarUrl: profileData.avatarfull || user.photos?.[2]?.value,
-        avatarMedium: profileData.avatarmedium || user.photos?.[1]?.value,
-        profileUrl: profileData.profileurl,
-        lastLogin: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
+    // Criar/atualizar usuário no Firebase
+    await db.collection('users').doc(steamId).set({
+      steamId: steamId,
+      personaName: profileData.personaname,
+      avatarUrl: profileData.avatarfull,
+      avatarMedium: profileData.avatarmedium,
+      profileUrl: profileData.profileurl,
+      lastLogin: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
 
-      // Verificar se é novo usuário
-      const userDoc = await db.collection('users').doc(steamId).get();
-      if (!userDoc.data().createdAt) {
-        await db.collection('users').doc(steamId).update({
-          createdAt: admin.firestore.FieldValue.serverTimestamp()
-        });
-      }
-
-      // Gerar custom token para o app
-      const customToken = await admin.auth().createCustomToken(steamId, {
-        steamId: steamId,
-        personaName: profileData.personaname || user.displayName
+    // Verificar se é novo usuário
+    const userDoc = await db.collection('users').doc(steamId).get();
+    if (!userDoc.data().createdAt) {
+      await db.collection('users').doc(steamId).update({
+        createdAt: admin.firestore.FieldValue.serverTimestamp()
       });
-
-      // Redirecionar para URL scheme do Flutter
-      const params = new URLSearchParams({
-        token: customToken,
-        steamId: steamId,
-        personaName: profileData.personaname || user.displayName,
-        avatarUrl: profileData.avatarfull || user.photos?.[2]?.value || ''
-      });
-
-      const redirectUrl = `csrank://auth/success?${params.toString()}`;
-      console.log('[AUTH] Redirecting to app...');
-
-      res.redirect(redirectUrl);
-
-    } catch (err) {
-      console.error('[AUTH] Error processing Steam login:', err);
-      res.status(500).send(`
-        <html>
-          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
-            <div style="text-align:center;">
-              <h1 style="color:#ff6b6b;">Erro no Servidor</h1>
-              <p>Não foi possível processar o login</p>
-              <p style="color:#aaa;font-size:12px;">${err.message}</p>
-            </div>
-          </body>
-        </html>
-      `);
     }
-  })(req, res, next);
+
+    // Gerar custom token para o app
+    const customToken = await admin.auth().createCustomToken(steamId, {
+      steamId: steamId,
+      personaName: profileData.personaname
+    });
+
+    // Redirecionar para URL scheme do Flutter
+    const params = new URLSearchParams({
+      token: customToken,
+      steamId: steamId,
+      personaName: profileData.personaname,
+      avatarUrl: profileData.avatarfull
+    });
+
+    const redirectUrl = `csrank://auth/success?${params.toString()}`;
+    console.log('[AUTH] Redirecting to app...');
+
+    res.redirect(redirectUrl);
+
+  } catch (err) {
+    console.error('[AUTH] Error:', err.message);
+    res.status(500).send(`
+      <html>
+        <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+          <div style="text-align:center;">
+            <h1 style="color:#ff6b6b;">Erro no Servidor</h1>
+            <p>${err.message}</p>
+          </div>
+        </body>
+      </html>
+    `);
+  }
 });
 
-// API para obter token (usado pelo app após callback)
+// API para obter token
 app.get('/auth/token/:steamId', async (req, res) => {
   try {
     const { steamId } = req.params;
@@ -457,7 +452,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '2.0.0'
+    version: '2.1.0'
   });
 });
 
@@ -483,10 +478,11 @@ app.get('/api/steam/profile/:steamId', async (req, res) => {
 app.listen(PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
-  console.log('║              CSRank Bridge Server v2.0                       ║');
-  console.log('║              (using passport-steam)                          ║');
+  console.log('║              CSRank Bridge Server v2.1                       ║');
+  console.log('║              (Manual OpenID 2.0)                             ║');
   console.log('╠══════════════════════════════════════════════════════════════╣');
   console.log(`║  Port: ${PORT}                                                    ║`);
+  console.log(`║  Steam API Key: ${STEAM_API_KEY ? 'Configured' : 'MISSING!'}                              ║`);
   console.log('║                                                              ║');
   console.log('║  Endpoints:                                                  ║');
   console.log('║  - GET  /auth/steam          - Iniciar login Steam           ║');
