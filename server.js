@@ -3,36 +3,33 @@
  *
  * Responsabilidades:
  * 1. Receber webhooks do MatchZy com stats das partidas
- * 2. Processar login Steam via OpenID 2.0
+ * 2. Processar login Steam via OpenID 2.0 (usando passport-steam)
  * 3. Sincronizar dados com Firebase
  */
 
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const session = require('express-session');
+const passport = require('passport');
+const SteamStrategy = require('passport-steam').Strategy;
 const admin = require('firebase-admin');
 const axios = require('axios');
-const { RelyingParty } = require('openid');
 
 const app = express();
 // IMPORTANTE: Necessário para o Render (que usa proxy reverso HTTPS)
 app.set('trust proxy', 1);
 
 const PORT = process.env.PORT || 3000;
-// Se estiver no Render (RENDER_EXTERNAL_URL existe) usa ela, senão tenta BASE_URL ou fallback local
-const BASE_URL = process.env.BASE_URL || process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 const STEAM_API_KEY = process.env.STEAM_API_KEY;
 
 // Inicializar Firebase Admin
 let firebaseCredential;
 
-// Verificar se está usando variável de ambiente (deploy na nuvem) ou arquivo local
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  // Na nuvem: usar variável de ambiente (JSON string)
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   firebaseCredential = admin.credential.cert(serviceAccount);
 } else {
-  // Local: usar arquivo
   const serviceAccount = require('./firebase-service-account.json');
   firebaseCredential = admin.credential.cert(serviceAccount);
 }
@@ -47,93 +44,116 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Session para passport (necessário mas não usamos para persistir)
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'csrank-steam-auth-secret-key',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { secure: false } // Não precisamos de cookie seguro pois não persistimos sessão
+}));
+
+app.use(passport.initialize());
+
+// Passport serialization (mínimo necessário)
+passport.serializeUser((user, done) => done(null, user));
+passport.deserializeUser((obj, done) => done(null, obj));
+
 // ============================================
-// STEAM AUTHENTICATION (CORRIGIDO - usa request real)
+// STEAM AUTHENTICATION (usando passport-steam)
 // ============================================
 
-// Helper: Cria RelyingParty baseado no request atual
-// Isso garante que o realm sempre corresponde ao host real
-function createSteamRelyingParty(req) {
-  const protocol = req.protocol;  // 'https' no Render (trust proxy ativado)
-  const host = req.get('host');   // 'csrank-bridge.onrender.com'
-  const baseUrl = `${protocol}://${host}`;
-
-  console.log(`[AUTH] Creating RelyingParty with realm: ${baseUrl}`);
-
-  return new RelyingParty(
-    `${baseUrl}/auth/steam/callback`,
-    baseUrl,
-    true,   // stateless
-    false,  // strict mode
-    []      // extensions
-  );
+// Configurar estratégia Steam dinamicamente baseado no request
+function getBaseUrl(req) {
+  const protocol = req.protocol;
+  const host = req.get('host');
+  return `${protocol}://${host}`;
 }
 
 // Iniciar login Steam
-app.get('/auth/steam', (req, res) => {
-  const steamOpenId = createSteamRelyingParty(req);
+app.get('/auth/steam', (req, res, next) => {
+  const baseUrl = getBaseUrl(req);
+  console.log(`[AUTH] Starting Steam auth with realm: ${baseUrl}`);
 
-  steamOpenId.authenticate(
-    'https://steamcommunity.com/openid',
-    false,
-    (error, authUrl) => {
-      if (error) {
-        console.error('[AUTH] Steam auth error:', error);
-        return res.status(500).json({ error: 'Failed to authenticate with Steam' });
-      }
+  // Criar estratégia dinamicamente com a URL correta
+  const strategy = new SteamStrategy({
+    returnURL: `${baseUrl}/auth/steam/callback`,
+    realm: baseUrl,
+    apiKey: STEAM_API_KEY
+  }, (identifier, profile, done) => {
+    // Extrair steamId do identifier
+    const steamId = identifier.replace('https://steamcommunity.com/openid/id/', '');
+    profile.steamId = steamId;
+    return done(null, profile);
+  });
 
-      if (!authUrl) {
-        return res.status(500).json({ error: 'No auth URL generated' });
-      }
+  // Registrar estratégia temporária
+  passport.use('steam-dynamic', strategy);
 
-      console.log('[AUTH] Redirecting to Steam...');
-      res.redirect(authUrl);
-    }
-  );
+  // Autenticar
+  passport.authenticate('steam-dynamic')(req, res, next);
 });
 
 // Callback do Steam
-app.get('/auth/steam/callback', async (req, res) => {
-  const steamOpenId = createSteamRelyingParty(req);
+app.get('/auth/steam/callback', (req, res, next) => {
+  const baseUrl = getBaseUrl(req);
+  console.log(`[AUTH] Steam callback received at: ${baseUrl}`);
 
-  // Construir URL completa usando dados reais do request
-  const protocol = req.protocol;
-  const host = req.get('host');
-  const fullUrl = `${protocol}://${host}${req.originalUrl}`;
+  // Recriar estratégia com a mesma URL
+  const strategy = new SteamStrategy({
+    returnURL: `${baseUrl}/auth/steam/callback`,
+    realm: baseUrl,
+    apiKey: STEAM_API_KEY
+  }, (identifier, profile, done) => {
+    const steamId = identifier.replace('https://steamcommunity.com/openid/id/', '');
+    profile.steamId = steamId;
+    return done(null, profile);
+  });
 
-  console.log('[AUTH] Verifying assertion for:', fullUrl);
+  passport.use('steam-dynamic', strategy);
 
-  steamOpenId.verifyAssertion(fullUrl, async (error, result) => {
-    if (error || !result.authenticated) {
-      console.error('[AUTH] Steam verification failed:', error?.message || 'Not authenticated');
+  passport.authenticate('steam-dynamic', { session: false }, async (err, user, info) => {
+    if (err) {
+      console.error('[AUTH] Steam auth error:', err);
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
             <div style="text-align:center;">
               <h1 style="color:#ff6b6b;">Erro no Login</h1>
               <p>dados incorretos</p>
-              <p style="color:#aaa;font-size:12px;">${error?.message || 'Verification failed'}</p>
-              <p>Feche esta janela e tente novamente.</p>
+              <p style="color:#aaa;font-size:12px;">${err.message || 'Authentication failed'}</p>
             </div>
           </body>
         </html>
       `);
     }
 
-    // Extrair SteamID64 da URL retornada
-    const steamId = result.claimedIdentifier.replace('https://steamcommunity.com/openid/id/', '');
-    console.log('Steam login successful for:', steamId);
+    if (!user) {
+      console.error('[AUTH] No user returned from Steam');
+      return res.status(401).send(`
+        <html>
+          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+            <div style="text-align:center;">
+              <h1 style="color:#ff6b6b;">Erro no Login</h1>
+              <p>Autenticação cancelada ou falhou</p>
+            </div>
+          </body>
+        </html>
+      `);
+    }
+
+    const steamId = user.steamId || user.id;
+    console.log('[AUTH] Steam login successful for:', steamId);
 
     try {
-      // Buscar dados do perfil Steam
-      const profileData = await getSteamProfile(steamId);
+      // Buscar dados do perfil Steam (passport-steam já fornece alguns)
+      const profileData = user._json || await getSteamProfile(steamId);
 
       // Criar/atualizar usuário no Firebase
       await db.collection('users').doc(steamId).set({
         steamId: steamId,
-        personaName: profileData.personaname,
-        avatarUrl: profileData.avatarfull,
-        avatarMedium: profileData.avatarmedium,
+        personaName: profileData.personaname || user.displayName,
+        avatarUrl: profileData.avatarfull || user.photos?.[2]?.value,
+        avatarMedium: profileData.avatarmedium || user.photos?.[1]?.value,
         profileUrl: profileData.profileurl,
         lastLogin: admin.firestore.FieldValue.serverTimestamp(),
         updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -150,44 +170,49 @@ app.get('/auth/steam/callback', async (req, res) => {
       // Gerar custom token para o app
       const customToken = await admin.auth().createCustomToken(steamId, {
         steamId: steamId,
-        personaName: profileData.personaname
+        personaName: profileData.personaname || user.displayName
       });
 
-      // REDIRECIONAR PARA URL SCHEME DO FLUTTER
-      // O WebView intercepta csrank:// antes de tentar navegar
+      // Redirecionar para URL scheme do Flutter
       const params = new URLSearchParams({
         token: customToken,
         steamId: steamId,
-        personaName: profileData.personaname,
-        avatarUrl: profileData.avatarfull
+        personaName: profileData.personaname || user.displayName,
+        avatarUrl: profileData.avatarfull || user.photos?.[2]?.value || ''
       });
 
       const redirectUrl = `csrank://auth/success?${params.toString()}`;
-      console.log('Redirecting to:', redirectUrl);
+      console.log('[AUTH] Redirecting to app...');
 
       res.redirect(redirectUrl);
 
     } catch (err) {
-      console.error('Error processing Steam login:', err);
-      res.status(500).send('Error processing login');
+      console.error('[AUTH] Error processing Steam login:', err);
+      res.status(500).send(`
+        <html>
+          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
+            <div style="text-align:center;">
+              <h1 style="color:#ff6b6b;">Erro no Servidor</h1>
+              <p>Não foi possível processar o login</p>
+              <p style="color:#aaa;font-size:12px;">${err.message}</p>
+            </div>
+          </body>
+        </html>
+      `);
     }
-  });
+  })(req, res, next);
 });
-
 
 // API para obter token (usado pelo app após callback)
 app.get('/auth/token/:steamId', async (req, res) => {
   try {
     const { steamId } = req.params;
-    const { signature } = req.query;
 
-    // Verificar se usuário existe
     const userDoc = await db.collection('users').doc(steamId).get();
     if (!userDoc.exists) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Gerar novo token
     const customToken = await admin.auth().createCustomToken(steamId);
     res.json({ token: customToken });
 
@@ -237,14 +262,12 @@ async function processMatchEnd(data) {
   const matchId = data.matchid || `match_${Date.now()}`;
   const mapName = data.map_name || data.map || 'unknown';
 
-  // Extrair informações do time
   const team1 = data.team1 || data.params?.team1 || {};
   const team2 = data.team2 || data.params?.team2 || {};
 
   const scoreTeam1 = team1.score || team1.series_score || 0;
   const scoreTeam2 = team2.score || team2.series_score || 0;
 
-  // Criar documento da partida
   const matchData = {
     matchzyId: matchId,
     map: mapName,
@@ -262,7 +285,6 @@ async function processMatchEnd(data) {
   await db.collection('matches').doc(matchId).set(matchData);
   console.log('Match saved:', matchId);
 
-  // Processar stats dos jogadores
   const allPlayers = [
     ...(team1.players || []).map(p => ({ ...p, team: 1 })),
     ...(team2.players || []).map(p => ({ ...p, team: 2 }))
@@ -276,7 +298,6 @@ async function processMatchEnd(data) {
 }
 
 async function processMapResult(data) {
-  // Similar ao processMatchEnd mas para resultado de mapa individual
   await processMatchEnd(data);
 }
 
@@ -292,47 +313,38 @@ async function processPlayerStats(matchId, player, matchData) {
   const stats = {
     matchId: matchId,
     oderId: steamId,
-    odertId: steamId, // duplicate for compatibility
+    odertId: steamId,
     oderne: player.name || 'Unknown',
     team: player.team,
     teamName: player.team === 1 ? matchData.team1Name : matchData.team2Name,
     isWinner: matchData.winner === player.team,
 
-    // Stats principais
     kills: player.kills || player.stats?.kills || 0,
     deaths: player.deaths || player.stats?.deaths || 0,
     assists: player.assists || player.stats?.assists || 0,
 
-    // Stats avancadas
     adr: player.adr || player.stats?.adr || 0,
     kast: player.kast || player.stats?.kast || 0,
     rating: player.rating || player.stats?.rating || 0,
 
-    // Headshots
     headshots: player.headshot_kills || player.stats?.headshot_kills || 0,
     headshotPercent: calculateHSPercent(player),
 
-    // MVPs e utilidades
     mvps: player.mvps || player.stats?.mvps || 0,
     utilityDamage: player.utility_damage || player.stats?.utility_damage || 0,
     enemiesFlashed: player.enemies_flashed || player.stats?.enemies_flashed || 0,
     flashAssists: player.flash_assists || player.stats?.flash_assists || 0,
 
-    // Objetivos
     plants: player.bomb_plants || player.stats?.bomb_plants || 0,
     defuses: player.bomb_defuses || player.stats?.bomb_defuses || 0,
 
-    // First kills
     firstKills: player.first_kills || player.stats?.first_kills || 0,
     firstDeaths: player.first_deaths || player.stats?.first_deaths || 0,
 
-    // Clutches
     clutchesWon: player.clutches_won || player.stats?.clutches_won || 0,
 
-    // Damage
     damage: player.damage || player.stats?.damage || 0,
 
-    // Meta
     map: matchData.map,
     date: admin.firestore.FieldValue.serverTimestamp()
   };
@@ -340,7 +352,6 @@ async function processPlayerStats(matchId, player, matchData) {
   await db.collection('matchStats').doc(statsId).set(stats);
   console.log(`Stats saved for ${player.name} (${steamId})`);
 
-  // Atualizar perfil do jogador se ele estiver cadastrado
   const userDoc = await db.collection('users').doc(steamId).get();
   if (userDoc.exists) {
     await updatePlayerAggregatedStats(steamId);
@@ -438,23 +449,20 @@ async function updatePlayerAggregatedStats(steamId) {
 // UTILITY ENDPOINTS
 // ============================================
 
-// Health check
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    version: '2.0.0'
   });
 });
 
-// Obter perfil Steam
 async function getSteamProfile(steamId) {
   const url = `https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/?key=${STEAM_API_KEY}&steamids=${steamId}`;
   const response = await axios.get(url);
   return response.data.response.players[0];
 }
 
-// API para buscar perfil (usado pelo app)
 app.get('/api/steam/profile/:steamId', async (req, res) => {
   try {
     const profile = await getSteamProfile(req.params.steamId);
@@ -471,10 +479,10 @@ app.get('/api/steam/profile/:steamId', async (req, res) => {
 app.listen(PORT, () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
-  console.log('║                    CSRank Bridge Server                      ║');
+  console.log('║              CSRank Bridge Server v2.0                       ║');
+  console.log('║              (using passport-steam)                          ║');
   console.log('╠══════════════════════════════════════════════════════════════╣');
-  console.log(`║  Internal: http://localhost:${PORT}                             ║`);
-  console.log(`║  External: ${BASE_URL}                                          ║`);
+  console.log(`║  Port: ${PORT}                                                    ║`);
   console.log('║                                                              ║');
   console.log('║  Endpoints:                                                  ║');
   console.log('║  - GET  /auth/steam          - Iniciar login Steam           ║');
