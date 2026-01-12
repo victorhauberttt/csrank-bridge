@@ -97,6 +97,8 @@ app.get('/auth/steam', (req, res, next) => {
 app.get('/auth/steam/callback', (req, res, next) => {
   const baseUrl = getBaseUrl(req);
   console.log(`[AUTH] Steam callback received at: ${baseUrl}`);
+  console.log(`[AUTH] Query params:`, req.query);
+  console.log(`[AUTH] STEAM_API_KEY configured:`, !!STEAM_API_KEY);
 
   // Recriar estratégia com a mesma URL
   const strategy = new SteamStrategy({
@@ -112,8 +114,10 @@ app.get('/auth/steam/callback', (req, res, next) => {
   passport.use('steam-dynamic', strategy);
 
   passport.authenticate('steam-dynamic', { session: false }, async (err, user, info) => {
+    console.log('[AUTH] authenticate callback - err:', err?.message, 'user:', !!user, 'info:', info);
+
     if (err) {
-      console.error('[AUTH] Steam auth error:', err);
+      console.error('[AUTH] Steam auth error:', err.message, err.stack);
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
