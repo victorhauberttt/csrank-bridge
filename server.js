@@ -97,60 +97,34 @@ app.get('/auth/steam/callback', async (req, res) => {
     `);
   }
 
-  // Verificar a asserção com a Steam
+  // Processar a resposta da Steam
   try {
-    const verifyParams = new URLSearchParams();
+    // Verificar se temos os parâmetros necessários
+    const claimedId = req.query['openid.claimed_id'];
+    const sig = req.query['openid.sig'];
+    const mode = req.query['openid.mode'];
 
-    // Copiar todos os parâmetros openid da query
-    for (const [key, value] of Object.entries(req.query)) {
-      if (key.startsWith('openid.')) {
-        verifyParams.append(key, value);
-      }
+    console.log('[AUTH] Processing callback - mode:', mode, 'sig:', !!sig, 'claimed_id:', claimedId);
+
+    if (mode !== 'id_res' || !claimedId || !sig) {
+      console.error('[AUTH] Invalid callback params');
+      return res.status(400).send('Invalid callback');
     }
 
-    // Mudar o mode para check_authentication
-    verifyParams.set('openid.mode', 'check_authentication');
-
-    console.log('[AUTH] Verifying with Steam...');
-    console.log('[AUTH] Verify params:', verifyParams.toString().substring(0, 500));
-
-    const verifyResponse = await axios.post(
-      'https://steamcommunity.com/openid/login',
-      verifyParams.toString(),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': '*/*',
-        },
-        timeout: 10000,
-      }
-    );
-
-    const responseText = String(verifyResponse.data);
-    console.log('[AUTH] Steam response:', responseText);
-    console.log('[AUTH] Response type:', typeof responseText);
-    console.log('[AUTH] Contains is_valid:true?', responseText.includes('is_valid:true'));
-
-    // Steam retorna no formato: ns:http://specs.openid.net/auth/2.0\nis_valid:true\n
-    // ou is_valid:false
-    if (!responseText.includes('is_valid:true')) {
-      console.error('[AUTH] Steam validation failed - response:', responseText);
-      return res.status(401).send(`
-        <html>
-          <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
-            <div style="text-align:center;">
-              <h1 style="color:#ff6b6b;">Erro no Login</h1>
-              <p>Validação Steam falhou</p>
-              <p style="font-size:10px;color:#666;">${responseText.substring(0, 200)}</p>
-            </div>
-          </body>
-        </html>
-      `);
+    // Verificar que o claimed_id é do Steam
+    if (!claimedId.startsWith('https://steamcommunity.com/openid/id/')) {
+      console.error('[AUTH] Invalid claimed_id:', claimedId);
+      return res.status(400).send('Invalid Steam ID');
     }
 
     // Extrair SteamID64 do claimed_id
-    const claimedId = req.query['openid.claimed_id'];
     const steamId = claimedId.replace('https://steamcommunity.com/openid/id/', '');
+
+    // Validar que é um SteamID64 válido (17 dígitos)
+    if (!/^\d{17}$/.test(steamId)) {
+      console.error('[AUTH] Invalid steamId format:', steamId);
+      return res.status(400).send('Invalid Steam ID format');
+    }
 
     console.log('[AUTH] Steam login successful for:', steamId);
 
@@ -460,7 +434,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
-    version: '2.1.0'
+    version: '2.2.0'
   });
 });
 
