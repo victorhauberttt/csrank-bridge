@@ -47,29 +47,38 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Configurar OpenID para Steam
-const steamOpenId = new RelyingParty(
-  `${BASE_URL}/auth/steam/callback`, // Callback URL
-  BASE_URL, // Realm
-  true, // Stateless
-  false, // Strict mode
-  [] // Extensions
-);
+// ============================================
+// STEAM AUTHENTICATION (CORRIGIDO - usa request real)
+// ============================================
 
-// ============================================
-// STEAM AUTHENTICATION
-// ============================================
+// Helper: Cria RelyingParty baseado no request atual
+// Isso garante que o realm sempre corresponde ao host real
+function createSteamRelyingParty(req) {
+  const protocol = req.protocol;  // 'https' no Render (trust proxy ativado)
+  const host = req.get('host');   // 'csrank-bridge.onrender.com'
+  const baseUrl = `${protocol}://${host}`;
+
+  console.log(`[AUTH] Creating RelyingParty with realm: ${baseUrl}`);
+
+  return new RelyingParty(
+    `${baseUrl}/auth/steam/callback`,
+    baseUrl,
+    true,   // stateless
+    false,  // strict mode
+    []      // extensions
+  );
+}
 
 // Iniciar login Steam
 app.get('/auth/steam', (req, res) => {
-  const returnUrl = req.query.returnUrl || '';
+  const steamOpenId = createSteamRelyingParty(req);
 
   steamOpenId.authenticate(
     'https://steamcommunity.com/openid',
     false,
     (error, authUrl) => {
       if (error) {
-        console.error('Steam auth error:', error);
+        console.error('[AUTH] Steam auth error:', error);
         return res.status(500).json({ error: 'Failed to authenticate with Steam' });
       }
 
@@ -77,31 +86,33 @@ app.get('/auth/steam', (req, res) => {
         return res.status(500).json({ error: 'No auth URL generated' });
       }
 
-      // Salvar returnUrl em state parameter
-      const finalUrl = authUrl + (returnUrl ? `&state=${encodeURIComponent(returnUrl)}` : '');
-      res.redirect(finalUrl);
+      console.log('[AUTH] Redirecting to Steam...');
+      res.redirect(authUrl);
     }
   );
 });
 
 // Callback do Steam
 app.get('/auth/steam/callback', async (req, res) => {
-  // Construir a URL completa manualmente para garantir HTTPS no Render
-  // Isso resolve problemas onde o proxy do Render faz a lib achar que é HTTP
-  const fullUrl = BASE_URL + req.originalUrl;
-  console.log('Verifying assertion for:', fullUrl);
+  const steamOpenId = createSteamRelyingParty(req);
+
+  // Construir URL completa usando dados reais do request
+  const protocol = req.protocol;
+  const host = req.get('host');
+  const fullUrl = `${protocol}://${host}${req.originalUrl}`;
+
+  console.log('[AUTH] Verifying assertion for:', fullUrl);
 
   steamOpenId.verifyAssertion(fullUrl, async (error, result) => {
     if (error || !result.authenticated) {
-      console.error('Steam verification failed:', error);
-      const errorMsg = error ? error.message : 'Not authenticated';
+      console.error('[AUTH] Steam verification failed:', error?.message || 'Not authenticated');
       return res.status(401).send(`
         <html>
           <body style="background:#1a1a2e;color:white;font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;">
             <div style="text-align:center;">
               <h1 style="color:#ff6b6b;">Erro no Login</h1>
-              <p>Não foi possível verificar sua conta Steam.</p>
-              <p style="color:#aaa;font-size:12px;">Detalhes: ${errorMsg}</p>
+              <p>dados incorretos</p>
+              <p style="color:#aaa;font-size:12px;">${error?.message || 'Verification failed'}</p>
               <p>Feche esta janela e tente novamente.</p>
             </div>
           </body>
